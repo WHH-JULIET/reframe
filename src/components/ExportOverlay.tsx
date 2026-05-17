@@ -117,14 +117,9 @@ export default function ExportOverlay({
                 : "Processing your video locally."}
             </p>
 
-            {showBatchProgress && (
-              <p className="mt-2 text-xs uppercase tracking-wide text-film-600">
-                Exporting {currentExportIndex} of {totalExports}:{" "}
-                {currentPreset}
-              </p>
-            )}
+            
 
-            <p className="mt-2 font-heading text-xs font-semibold uppercase tracking-wide text-film-600">
+            <p className="text-xs font-heading font-semibold text-film-600 mt-2 uppercase tracking-wide">
               Do not close or refresh this tab
             </p>
           </div>
