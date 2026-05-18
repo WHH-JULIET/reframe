@@ -1,5 +1,6 @@
 export interface EditRecipe {
   preset: string;
+  selectedPresets?: string[];
   customWidth: number;
   customHeight: number;
   framing: "fit" | "fill";

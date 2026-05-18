@@ -80,9 +80,19 @@ const handleHeightChange = useCallback((h: number) => {
   );
 
   const handlePresetSelect = useCallback((presetId: string) => {
-    onChange({ preset: presetId });
-    setSearch("");
-  }, [onChange]);
+  const current = recipe.selectedPresets ?? [];
+
+  const updated = current.includes(presetId)
+    ? current.filter((id) => id !== presetId)
+    : [...current, presetId];
+
+  onChange({
+    selectedPresets: updated,
+    preset: updated[0] ?? "custom",
+  });
+
+  setSearch("");
+}, [onChange, recipe.selectedPresets]);
 
   return (
     <div className="space-y-3">
@@ -106,7 +116,8 @@ const handleHeightChange = useCallback((h: number) => {
           </div>
         ) : (
           filteredPresets.map((preset) => {
-            const active = recipe.preset === preset.id;
+            const selectedPresets = recipe.selectedPresets ?? [];
+            const active = selectedPresets.includes(preset.id);
             return (
               <button
                 type="button"
@@ -122,7 +133,21 @@ const handleHeightChange = useCallback((h: number) => {
                     : "border-[var(--border)] bg-[var(--surface)] hover:border-film-300 hover:bg-film-50/30"
                 )}
               >
-                <RatioBox width={preset.width} height={preset.height} active={active} />
+                <div className="flex items-start">
+  <input
+    type="checkbox"
+    checked={active}
+    readOnly
+    className="mt-1 pointer-events-none"
+    aria-hidden="true"
+  />
+</div>
+
+<RatioBox
+  width={preset.width}
+  height={preset.height}
+  active={active}
+/>
                 <div className="min-w-0 flex-1 overflow-hidden">
                   <p className={cn(
                     "text-xs font-heading font-bold leading-tight whitespace-nowrap",

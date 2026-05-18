@@ -1,36 +1,69 @@
 "use client";
 
+import JSZip from "jszip";
 import { useState, useCallback, useEffect, useRef } from "react";
-import { EditRecipe, ExportResult, ExportStatus, MAX_FILE_SIZE } from "@/lib/types";
+
+import {
+  EditRecipe,
+  ExportResult,
+  ExportStatus,
+  MAX_FILE_SIZE,
+} from "@/lib/types";
+
 import { DEFAULT_RECIPE } from "@/lib/constants";
-import { loadFFmpeg, exportVideo, terminateFFmpeg, FFmpegLoadError } from "@/lib/ffmpeg";
 
-const DEFAULT_TITLE = "Reframe — Resize, trim, and export videos in your browser";
+import {
+  loadFFmpeg,
+  exportVideo,
+  terminateFFmpeg,
+  FFmpegLoadError,
+} from "@/lib/ffmpeg";
 
-export function extractMetadata(file: File): Promise<{ width: number; height: number; duration: number }> {
+const DEFAULT_TITLE =
+  "Reframe — Resize, trim, and export videos in your browser";
+
+export function extractMetadata(
+  file: File
+): Promise<{
+  width: number;
+  height: number;
+  duration: number;
+}> {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
+
     const video = document.createElement("video");
+
     const timeout = setTimeout(() => {
       URL.revokeObjectURL(url);
-      reject( new Error("Video metaData load timeout"))
-    }, 500);
+
+      reject(new Error("Video metadata load timeout"));
+    }, 5000);
 
     video.preload = "metadata";
+
     video.onloadedmetadata = () => {
-      clearTimeout(timeout)
+      clearTimeout(timeout);
+
       resolve({
         width: video.videoWidth,
         height: video.videoHeight,
-        duration: isFinite(video.duration) ? video.duration : 0,
+        duration: isFinite(video.duration)
+          ? video.duration
+          : 0,
       });
+
       URL.revokeObjectURL(url);
     };
+
     video.onerror = () => {
-      clearTimeout(timeout)
+      clearTimeout(timeout);
+
       URL.revokeObjectURL(url);
+
       reject(new Error("Failed to load video metadata"));
     };
+
     video.src = url;
   });
 }
@@ -38,243 +71,670 @@ export function extractMetadata(file: File): Promise<{ width: number; height: nu
 function verifyMagicBytes(file: File): Promise<boolean> {
   return new Promise((resolve) => {
     const reader = new FileReader();
+
     reader.onloadend = (e) => {
       if (!e.target?.result) {
         resolve(false);
         return;
       }
-      const arr = new Uint8Array(e.target.result as ArrayBuffer);
-      const hex = Array.from(arr).map(b => b.toString(16).padStart(2, "0")).join("").toUpperCase();
+
+      const arr = new Uint8Array(
+        e.target.result as ArrayBuffer
+      );
+
+      const hex = Array.from(arr)
+        .map((b) =>
+          b.toString(16).padStart(2, "0")
+        )
+        .join("")
+        .toUpperCase();
+
       const ascii = String.fromCharCode(...arr);
 
       // WebM / MKV
-      if (hex.startsWith("1A45DFA3")) resolve(true);
+      if (hex.startsWith("1A45DFA3")) {
+        resolve(true);
+      }
+
       // AVI
-      else if (hex.startsWith("52494646")) resolve(true);
-      // MP4 / MOV (checks for 'ftyp' in first 12 bytes)
-      else if (ascii.substring(0, 12).includes("ftyp")) resolve(true);
-      else resolve(false);
+      else if (hex.startsWith("52494646")) {
+        resolve(true);
+      }
+
+      // MP4 / MOV
+      else if (
+        ascii.substring(0, 12).includes("ftyp")
+      ) {
+        resolve(true);
+      }
+
+      else {
+        resolve(false);
+      }
     };
+
     reader.onerror = () => resolve(false);
+
     reader.readAsArrayBuffer(file.slice(0, 12));
   });
 }
 
 export function useVideoEditor() {
   const [file, setFile] = useState<File | null>(null);
-  const [duration, setDuration] = useState<number>(0);
+
+  const [duration, setDuration] =
+    useState<number>(0);
+
   const [recipe, setRecipe] = useState({
     ...DEFAULT_RECIPE,
+
     soundOnCompletion:
       typeof window !== "undefined" &&
-      localStorage.getItem("soundOnCompletion") === "true",
+      localStorage.getItem(
+        "soundOnCompletion"
+      ) === "true",
   });
-  const [status, setStatus] = useState<ExportStatus>("idle");
-  const [progress, setProgress] = useState(0);
-  const [result, setResult] = useState<ExportResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [fileError, setFileError] = useState("");
-  const exportAbortControllerRef = useRef<AbortController | null>(null);
-  const exportCancelledRef = useRef(false);
-  const videoRef = useRef<HTMLVideoElement>(null);
 
-  const updateRecipe = useCallback((patch: Partial<EditRecipe>) => {
-    setRecipe((prev) => ({ ...prev, ...patch }));
-  }, []);
+  const [status, setStatus] =
+    useState<ExportStatus>("idle");
 
-  const handleFileSelect = useCallback(async (selectedFile: File) => {
-    setResult(null);
-    setStatus("idle");
-    setError(null);
-    setFile(null);
-    if (!selectedFile.type.startsWith("video/")) {
-    setFileError("Please upload a video file only.");
-    return;
-  }
+  const [progress, setProgress] =
+    useState(0);
 
-  setFileError("");
+  const [batchProgress, setBatchProgress] =
+    useState<
+      {
+        presetId: string;
+        progress: number;
+        status:
+          | "pending"
+          | "exporting"
+          | "done"
+          | "error";
+      }[]
+    >([]);
 
-    // LAYER 0: Size check
-    if (selectedFile.size > MAX_FILE_SIZE) {
-      setError(`Validation Failed: File too large. Maximum size is 2GB.`);
-      setStatus("error");
-      return;
-    }
+  const [result, setResult] =
+    useState<ExportResult | null>(null);
 
-    const validExtensions = ['.mp4', '.mov', '.avi', '.webm', '.mkv'];
-    const filename = selectedFile.name.toLowerCase();
-    const hasValidExtension = validExtensions.some(ext => filename.endsWith(ext));
-    if (!hasValidExtension) {
-      setError(`Layer 1 Validation Failed: Invalid file extension. Expected one of: ${validExtensions.join(', ')}`);
-      setStatus("error");
-      return;
-    }
+  const [error, setError] =
+    useState<string | null>(null);
 
-    if (!selectedFile.type.startsWith("video/")) {
-      setError(`Layer 2 Validation Failed: Invalid MIME type. Expected video/*, got ${selectedFile.type || 'unknown'}`);
-      setStatus("error");
-      return;
-    }
+  const [fileError, setFileError] =
+    useState("");
 
-    const isVideo = await verifyMagicBytes(selectedFile);
-    if (!isVideo) {
-      setError("Layer 3 Validation Failed: Invalid file content. The file's magic bytes do not match known video formats.");
-      setStatus("error");
-      return;
-    }
+  const exportAbortControllerRef =
+    useRef<AbortController | null>(null);
 
-    try {
-      const { duration: dur } = await extractMetadata(selectedFile);
-      setDuration(dur);
-      setFile(selectedFile);
-      setRecipe((prev) => ({ ...prev, trimStart: 0, trimEnd: null }));
-    } catch (err) {
-      setError(`Layer 4 Validation Failed: ${err instanceof Error ? err.message : "Unknown error"}`);
-      setStatus("error");
-    }
-  }, []);
+  const exportCancelledRef =
+    useRef(false);
 
-  const handleExport = useCallback(async () => {
-    if (!file) return;
-    if (status === "loading-engine" || status === "exporting") {
-      return;
-    }
+  const videoRef =
+    useRef<HTMLVideoElement>(null);
 
-    const abortController = new AbortController();
-    exportAbortControllerRef.current = abortController;
-    exportCancelledRef.current = false;
+  const updateRecipe = useCallback(
+    (patch: Partial<EditRecipe>) => {
+      setRecipe((prev) => ({
+        ...prev,
+        ...patch,
+      }));
+    },
+    []
+  );
 
-    try {
-      setStatus("loading-engine");
-      setProgress(0);
-      setError(null);
-      if (result?.blobUrl) URL.revokeObjectURL(result.blobUrl);
+  const handleFileSelect = useCallback(
+    async (selectedFile: File) => {
       setResult(null);
 
-      const ffmpeg = await loadFFmpeg(abortController.signal);
-      if (exportCancelledRef.current) return;
+      setStatus("idle");
 
-      setStatus("exporting");
+      setError(null);
 
-      const exportResult = await exportVideo(
-        ffmpeg,
-        file,
-        recipe,
-        setProgress,
-        abortController.signal
-      );
-      if (exportCancelledRef.current) return;
+      setFile(null);
 
-      setResult(exportResult);
-      setStatus("done");
-     }  catch (err) {
-      if (exportCancelledRef.current) return;
+      if (
+        !selectedFile.type.startsWith(
+          "video/"
+        )
+      ) {
+        setFileError(
+          "Please upload a video file only."
+        );
 
-      console.error("export failed:", err);
-      if (err instanceof FFmpegLoadError) {
-        setError(err.message);
-      } else if (err instanceof Error && err.message.includes('network')) {
-        setError('Network error. Check your internet connection and try again.');
-      } else if (err instanceof Error && err.message.includes('codec')) {
-        setError('This video format is not supported. Try converting to MP4 first.');
-      } else {
-        setError('Export failed. Please try again or use a different video.');
+        return;
       }
-      setStatus("error");
-    }
-    finally {
-      if (exportAbortControllerRef.current === abortController) {
-        exportAbortControllerRef.current = null;
+
+      setFileError("");
+
+      // Layer 0: size check
+      if (
+        selectedFile.size > MAX_FILE_SIZE
+      ) {
+        setError(
+          "Validation Failed: File too large. Maximum size is 2GB."
+        );
+
+        setStatus("error");
+
+        return;
       }
-    }
-  }, [file, recipe, result, status]);
+
+      const validExtensions = [
+        ".mp4",
+        ".mov",
+        ".avi",
+        ".webm",
+        ".mkv",
+      ];
+
+      const filename =
+        selectedFile.name.toLowerCase();
+
+      const hasValidExtension =
+        validExtensions.some((ext) =>
+          filename.endsWith(ext)
+        );
+
+      if (!hasValidExtension) {
+        setError(
+          `Layer 1 Validation Failed: Invalid file extension. Expected one of: ${validExtensions.join(
+            ", "
+          )}`
+        );
+
+        setStatus("error");
+
+        return;
+      }
+
+      // Layer 2: MIME type check
+      if (
+        !selectedFile.type.startsWith(
+          "video/"
+        )
+      ) {
+        setError(
+          `Layer 2 Validation Failed: Invalid MIME type. Expected video/*, got ${
+            selectedFile.type || "unknown"
+          }`
+        );
+
+        setStatus("error");
+
+        return;
+      }
+
+      // Layer 3: magic bytes validation
+      const isVideo =
+        await verifyMagicBytes(
+          selectedFile
+        );
+
+      if (!isVideo) {
+        setError(
+          "Layer 3 Validation Failed: Invalid file content."
+        );
+
+        setStatus("error");
+
+        return;
+      }
+
+      try {
+        const { duration: dur } =
+          await extractMetadata(
+            selectedFile
+          );
+
+        setDuration(dur);
+
+        setFile(selectedFile);
+
+        setRecipe((prev) => ({
+          ...prev,
+          trimStart: 0,
+          trimEnd: null,
+        }));
+      } catch (err) {
+        setError(
+          `Layer 4 Validation Failed: ${
+            err instanceof Error
+              ? err.message
+              : "Unknown error"
+          }`
+        );
+
+        setStatus("error");
+      }
+    },
+    []
+  );
+
+  const exportSinglePreset =
+    useCallback(
+      async (
+        ffmpeg: any,
+        presetId: string,
+        onProgress: (
+          value: number
+        ) => void,
+        signal: AbortSignal
+      ) => {
+        if (!file) {
+          throw new Error(
+            "No file selected"
+          );
+        }
+
+        const exportRecipe = {
+          ...recipe,
+          preset: presetId,
+        };
+
+        return exportVideo(
+          ffmpeg,
+          file,
+          exportRecipe,
+          onProgress,
+          signal
+        );
+      },
+      [file, recipe]
+    );
+
+  const handleExport = useCallback(
+    async () => {
+      if (!file) return;
+
+      if (
+        status === "loading-engine" ||
+        status === "exporting"
+      ) {
+        return;
+      }
+
+      const abortController =
+        new AbortController();
+
+      exportAbortControllerRef.current =
+        abortController;
+
+      exportCancelledRef.current = false;
+
+      try {
+        setStatus("loading-engine");
+
+        setProgress(0);
+
+        setError(null);
+
+        setBatchProgress([]);
+
+        if (result?.blobUrl) {
+          URL.revokeObjectURL(
+            result.blobUrl
+          );
+        }
+
+        setResult(null);
+
+        const ffmpeg =
+          await loadFFmpeg(
+            abortController.signal
+          );
+
+        if (
+          exportCancelledRef.current
+        ) {
+          return;
+        }
+
+        setStatus("exporting");
+
+        const selectedPresets =
+          [recipe.preset];
+
+        const isBatchExport =
+          selectedPresets.length > 1;
+
+        setBatchProgress(
+          selectedPresets.map(
+            (presetId) => ({
+              presetId,
+              progress: 0,
+              status: "pending",
+            })
+          )
+        );
+
+        const zip = new JSZip();
+
+        let singleExportResult:
+          | ExportResult
+          | null = null;
+
+        for (const presetId of selectedPresets) {
+          if (
+            exportCancelledRef.current
+          ) {
+            break;
+          }
+
+          setBatchProgress((prev) =>
+            prev.map((item) =>
+              item.presetId ===
+              presetId
+                ? {
+                    ...item,
+                    status:
+                      "exporting",
+                  }
+                : item
+            )
+          );
+
+          const exportResult =
+            await exportSinglePreset(
+              ffmpeg,
+              presetId,
+              (value) => {
+                setProgress(value);
+
+                setBatchProgress(
+                  (prev) =>
+                    prev.map((item) =>
+                      item.presetId ===
+                      presetId
+                        ? {
+                            ...item,
+                            progress:
+                              value,
+                          }
+                        : item
+                    )
+                );
+              },
+              abortController.signal
+            );
+
+          if (!isBatchExport) {
+            singleExportResult =
+              exportResult;
+          }
+
+          const blob = await fetch(
+            exportResult.blobUrl
+          ).then((r) => r.blob());
+
+          zip.file(
+            `reframe_${presetId}.${exportResult.format}`,
+            blob
+          );
+
+          setBatchProgress((prev) =>
+            prev.map((item) =>
+              item.presetId ===
+              presetId
+                ? {
+                    ...item,
+                    progress: 100,
+                    status: "done",
+                  }
+                : item
+            )
+          );
+        }
+
+        if (
+          exportCancelledRef.current
+        ) {
+          return;
+        }
+
+        if (isBatchExport) {
+          const zipBlob =
+            await zip.generateAsync({
+              type: "blob",
+            });
+
+          const zipUrl =
+            URL.createObjectURL(
+              zipBlob
+            );
+
+          setResult({
+            blobUrl: zipUrl,
+            size: zipBlob.size,
+            width: 0,
+            height: 0,
+            format: "mp4",
+          });
+        } else if (
+          singleExportResult
+        ) {
+          setResult(
+            singleExportResult
+          );
+        }
+
+        setStatus("done");
+      } catch (err) {
+        if (
+          exportCancelledRef.current
+        ) {
+          return;
+        }
+
+        console.error(
+          "Export failed:",
+          err
+        );
+
+        if (
+          err instanceof
+          FFmpegLoadError
+        ) {
+          setError(err.message);
+        } else if (
+          err instanceof Error &&
+          err.message.includes(
+            "network"
+          )
+        ) {
+          setError(
+            "Network error. Check your internet connection and try again."
+          );
+        } else if (
+          err instanceof Error &&
+          err.message.includes(
+            "codec"
+          )
+        ) {
+          setError(
+            "This video format is not supported. Try converting to MP4 first."
+          );
+        } else {
+          setError(
+            "Export failed. Please try again or use a different video."
+          );
+        }
+
+        setStatus("error");
+      } finally {
+        if (
+          exportAbortControllerRef.current ===
+          abortController
+        ) {
+          exportAbortControllerRef.current =
+            null;
+        }
+      }
+    },
+    [
+      file,
+      recipe,
+      result,
+      status,
+      exportSinglePreset,
+    ]
+  );
 
   useEffect(() => {
     if (file) {
       document.title = `Editing: ${file.name} | Reframe`;
     } else {
-      document.title = DEFAULT_TITLE;
+      document.title =
+        DEFAULT_TITLE;
     }
+
     return () => {
-      document.title = DEFAULT_TITLE;
+      document.title =
+        DEFAULT_TITLE;
     };
   }, [file]);
 
   useEffect(() => {
-    const handleKeydown = (e: KeyboardEvent) => {
+    const handleKeydown = (
+      e: KeyboardEvent
+    ) => {
       if (
         (e.ctrlKey || e.metaKey) &&
         e.key === "Enter" &&
         file &&
-        status !== "loading-engine" &&
+        status !==
+          "loading-engine" &&
         status !== "exporting"
       ) {
         handleExport();
       }
     };
 
-    document.addEventListener("keydown", handleKeydown);
+    document.addEventListener(
+      "keydown",
+      handleKeydown
+    );
+
     return () => {
-      document.removeEventListener("keydown", handleKeydown);
+      document.removeEventListener(
+        "keydown",
+        handleKeydown
+      );
     };
   }, [file, status, handleExport]);
 
-  useEffect(()=>{
-    return ()=>{
-      if(result?.blobUrl){
-        URL.revokeObjectURL(result.blobUrl);
+  useEffect(() => {
+    return () => {
+      if (result?.blobUrl) {
+        URL.revokeObjectURL(
+          result.blobUrl
+        );
       }
-    }
-   },[result?.blobUrl])
+    };
+  }, [result?.blobUrl]);
 
-  const resetSettings = useCallback(() => {
-    setRecipe(DEFAULT_RECIPE);
-  }, []);
+  const resetSettings =
+    useCallback(() => {
+      setRecipe(DEFAULT_RECIPE);
+    }, []);
 
-  const cancelExport = useCallback(() => {
-    exportCancelledRef.current = true;
-    exportAbortControllerRef.current?.abort();
-    exportAbortControllerRef.current = null;
-    terminateFFmpeg();
-    setStatus("idle");
-    setProgress(0);
-    setError(null);
-  }, []);
+  const cancelExport =
+    useCallback(() => {
+      exportCancelledRef.current =
+        true;
 
+      exportAbortControllerRef.current?.abort();
+
+      exportAbortControllerRef.current =
+        null;
+
+      terminateFFmpeg();
+
+      setStatus("idle");
+
+      setProgress(0);
+
+      setError(null);
+    }, []);
 
   const reset = useCallback(() => {
-    if (result?.blobUrl) URL.revokeObjectURL(result.blobUrl);
+    if (result?.blobUrl) {
+      URL.revokeObjectURL(
+        result.blobUrl
+      );
+    }
+
     setFile(null);
+
     setDuration(0);
+
     setRecipe(DEFAULT_RECIPE);
+
     setStatus("idle");
+
     setProgress(0);
+
+    setBatchProgress([]);
+
     setResult(null);
+
     setError(null);
   }, [result]);
 
   useEffect(() => {
-    if (process.env.NODE_ENV !== "development") return;
-    if (status !== "exporting") return;
+    if (
+      process.env.NODE_ENV !==
+      "development"
+    ) {
+      return;
+    }
+
+    if (status !== "exporting") {
+      return;
+    }
 
     const interval = setInterval(() => {
-      const mem = (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory;
+      const mem = (
+        performance as Performance & {
+          memory?: {
+            usedJSHeapSize: number;
+          };
+        }
+      ).memory;
+
       if (mem) {
-        console.log("[Reframe Memory]", Math.round(mem.usedJSHeapSize / 1e6), "MB used");
+        console.log(
+          "[Reframe Memory]",
+          Math.round(
+            mem.usedJSHeapSize /
+              1e6
+          ),
+          "MB used"
+        );
       }
     }, 1000);
 
-    return () => clearInterval(interval);
+    return () =>
+      clearInterval(interval);
   }, [status]);
 
   useEffect(() => {
-    localStorage.setItem("soundOnCompletion", String(recipe.soundOnCompletion));
+    localStorage.setItem(
+      "soundOnCompletion",
+      String(
+        recipe.soundOnCompletion
+      )
+    );
   }, [recipe.soundOnCompletion]);
-  const seekTo = useCallback((time: number) => {
-    if (videoRef.current) {
-      videoRef.current.currentTime = time;
-    }
-  }, []);
+
+  const seekTo = useCallback(
+    (time: number) => {
+      if (videoRef.current) {
+        videoRef.current.currentTime =
+          time;
+      }
+    },
+    []
+  );
 
   return {
     file,
@@ -282,6 +742,7 @@ export function useVideoEditor() {
     recipe,
     status,
     progress,
+    batchProgress,
     result,
     error,
     videoRef,
