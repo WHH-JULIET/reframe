@@ -2,6 +2,9 @@
 
 import JSZip from "jszip";
 import { useState, useCallback, useEffect, useRef } from "react";
+import { EditRecipe, ExportResult, ExportStatus, MAX_FILE_SIZE, OverlayPosition } from "@/lib/types";
+import { DEFAULT_RECIPE } from "@/lib/constants";
+import { loadFFmpeg, exportVideo, terminateFFmpeg, FFmpegLoadError } from "@/lib/ffmpeg";
 
 import {
   EditRecipe,
@@ -134,6 +137,71 @@ export function useVideoEditor() {
         "soundOnCompletion"
       ) === "true",
   });
+  const [status, setStatus] = useState<ExportStatus>("idle");
+  const [progress, setProgress] = useState(0);
+  const [result, setResult] = useState<ExportResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [fileError, setFileError] = useState("");
+  const exportAbortControllerRef = useRef<AbortController | null>(null);
+  const exportCancelledRef = useRef(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  const [musicFile, setMusicFile] = useState<File | null>(null);
+  const [musicVolume, setMusicVolume] = useState(70);
+  const [originalAudioVolume, setOriginalAudioVolume] = useState(40);
+  const [loopMusic, setLoopMusic] = useState(false);
+
+  const [overlayFile, setOverlayFile] = useState<File | null>(null);
+  const [overlayPosition, setOverlayPosition] = useState<OverlayPosition>("bottom-right");
+  const [overlaySize, setOverlaySize] = useState(150);
+  const [overlayOpacity, setOverlayOpacity] = useState(100);
+
+  const updateRecipe = useCallback((patch: Partial<EditRecipe>) => {
+    setRecipe((prev) => ({ ...prev, ...patch }));
+  }, []);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("reframe-settings");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        setRecipe(prev => ({
+          ...prev,
+          preset: parsed.preset ?? prev.preset,
+          quality: parsed.quality ?? prev.quality,
+          speed: parsed.speed ?? prev.speed,
+          customWidth: parsed.customWidth ?? prev.customWidth,
+          customHeight: parsed.customHeight ?? prev.customHeight
+        }));
+      }
+    } catch (e) {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("reframe-settings", JSON.stringify({
+        preset: recipe.preset,
+        quality: recipe.quality,
+        speed: recipe.speed,
+        customWidth: recipe.customWidth,
+        customHeight: recipe.customHeight
+      }));
+    } catch (e) {
+      // ignore
+    }
+  }, [recipe.preset, recipe.quality, recipe.speed, recipe.customWidth, recipe.customHeight]);
+
+  const handleFileSelect = useCallback(async (selectedFile: File) => {
+    setResult(null);
+    setStatus("idle");
+    setError(null);
+    setFile(null);
+    if (!selectedFile.type.startsWith("video/")) {
+    setFileError("Please upload a video file only.");
+    return;
+  }
 
   const [status, setStatus] =
     useState<ExportStatus>("idle");
@@ -227,24 +295,41 @@ export function useVideoEditor() {
         ".mkv",
       ];
 
-      const filename =
-        selectedFile.name.toLowerCase();
+      const exportResult = await exportVideo(
+        ffmpeg,
+        file,
+        recipe,
+        setProgress,
+        abortController.signal,
+        {
+          file: musicFile,
+          musicVolume,
+          originalAudioVolume,
+          loopMusic,
+        },
+        {
+          file: overlayFile,
+          position: overlayPosition,
+          size: overlaySize,
+          opacity: overlayOpacity,
+        }
+      );
+      if (exportCancelledRef.current) return;
 
-      const hasValidExtension =
-        validExtensions.some((ext) =>
-          filename.endsWith(ext)
-        );
+      setResult(exportResult);
+      setStatus("done");
+     }  catch (err) {
+      if (exportCancelledRef.current) return;
 
-      if (!hasValidExtension) {
-        setError(
-          `Layer 1 Validation Failed: Invalid file extension. Expected one of: ${validExtensions.join(
-            ", "
-          )}`
-        );
-
-        setStatus("error");
-
-        return;
+      console.error("export failed:", err);
+      if (err instanceof FFmpegLoadError) {
+        setError(err.message);
+      } else if (err instanceof Error && err.message.includes('network')) {
+        setError('Network error. Check your internet connection and try again.');
+      } else if (err instanceof Error && err.message.includes('codec')) {
+        setError('This video format is not supported. Try converting to MP4 first.');
+      } else {
+        setError('Export failed. Please try again or use a different video.');
       }
 
       // Layer 2: MIME type check
@@ -580,7 +665,13 @@ export function useVideoEditor() {
   );
 
   useEffect(() => {
-    if (file) {
+    if (status === "exporting") {
+      document.title = `Exporting ${progress}% | Reframe`;
+    } else if (status === "loading-engine") {
+      document.title = `Loading engine... | Reframe`;
+    } else if (status === "done") {
+      document.title = `Export complete | Reframe`;
+    } else if (file) {
       document.title = `Editing: ${file.name} | Reframe`;
     } else {
       document.title =
@@ -591,7 +682,7 @@ export function useVideoEditor() {
       document.title =
         DEFAULT_TITLE;
     };
-  }, [file]);
+  }, [status, progress, file]);
 
   useEffect(() => {
     const handleKeydown = (
@@ -754,5 +845,21 @@ export function useVideoEditor() {
     cancelExport,
     reset,
     resetSettings,
+    musicFile,
+    setMusicFile,
+    musicVolume,
+    setMusicVolume,
+    originalAudioVolume,
+    setOriginalAudioVolume,
+    loopMusic,
+    setLoopMusic,
+    overlayFile,
+    setOverlayFile,
+    overlayPosition,
+    setOverlayPosition,
+    overlaySize,
+    setOverlaySize,
+    overlayOpacity,
+    setOverlayOpacity,
   };
 }
