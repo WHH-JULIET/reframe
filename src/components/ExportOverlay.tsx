@@ -1,7 +1,7 @@
 "use client";
 
 import FocusTrap from "focus-trap-react";
-import { useCallback, useEffect, useRef } from "react";
+import { useEffect, useRef, useCallback } from "react";
 import { ExportStatus } from "@/lib/types";
 import LottiePlayer from "./LottiePlayer";
 import spinnerAnim from "@/lib/lottie/spinner.json";
@@ -10,34 +10,18 @@ interface Props {
   status: ExportStatus;
   progress: number;
   onCancel?: () => void;
-  currentPreset?: string;
-  currentExportIndex?: number;
-  totalExports?: number;
 }
 
-export default function ExportOverlay({
-  status,
-  progress,
-  onCancel,
-  currentPreset,
-  currentExportIndex,
-  totalExports,
-}: Props) {
+export default function ExportOverlay({ status, progress, onCancel }: Props) {
   const visible = status === "loading-engine" || status === "exporting";
-  const isLoading = status === "loading-engine";
-  const showBatchProgress = Boolean(currentPreset && totalExports);
-
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const focusAnchorRef = useRef<HTMLDivElement | null>(null);
 
-  const handleKeyDown = useCallback(
-    (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        onCancel?.();
-      }
-    },
-    [onCancel],
-  );
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      onCancel?.();
+    }
+  }, [onCancel]);
 
   useEffect(() => {
     if (visible) {
@@ -45,7 +29,6 @@ export default function ExportOverlay({
     } else {
       document.body.style.overflow = "";
     }
-
     return () => {
       document.body.style.overflow = "";
     };
@@ -53,10 +36,8 @@ export default function ExportOverlay({
 
   useEffect(() => {
     if (!visible) return;
-
-    previousFocusRef.current = document.activeElement as HTMLElement;
     window.addEventListener("keydown", handleKeyDown);
-
+    previousFocusRef.current = document.activeElement as HTMLElement;
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
@@ -69,6 +50,8 @@ export default function ExportOverlay({
   }, [visible]);
 
   if (!visible) return null;
+
+  const isLoading = status === "loading-engine";
 
   return (
     <FocusTrap
@@ -96,8 +79,7 @@ export default function ExportOverlay({
             className="sr-only"
             aria-hidden="true"
           />
-
-          <div className="mx-auto h-20 w-20">
+          <div className="mx-auto w-20 h-20">
             <LottiePlayer
               animationData={spinnerAnim}
               loop
@@ -105,62 +87,54 @@ export default function ExportOverlay({
               aria-hidden="true"
             />
           </div>
-
           <div>
-            <h2 className="font-heading text-xl font-bold tracking-tight text-[var(--text)]">
+            <h2 className="font-heading font-bold text-xl tracking-tight text-[var(--text)]">
               {isLoading ? "Loading engine" : "Exporting"}
             </h2>
-
-            <p className="mt-1 text-sm text-[var(--muted)]">
+            <p className="text-sm text-[var(--muted)] mt-1">
               {isLoading
-                ? "Setting up the video engine. This only happens once."
+                ? "Downloading the video engine. This only happens once."
                 : "Processing your video locally."}
             </p>
-
-            
-
             <p className="text-xs font-heading font-semibold text-film-600 mt-2 uppercase tracking-wide">
               Do not close or refresh this tab
             </p>
           </div>
-
           <span className="sr-only">
-            {isLoading ? "Loading video engine..." : `Exporting: ${progress}%`}
+            {status === "loading-engine"
+              ? `Loading video engine: ${progress}%`
+              : `Exporting: ${progress}%`}
           </span>
-
-          {status === "exporting" && (
             <div className="w-full space-y-2">
-              <div className="h-1 w-full overflow-hidden rounded-full bg-film-100">
+              <div className="h-1 w-full bg-film-100 rounded-full overflow-hidden">
                 <div
                   role="progressbar"
                   aria-valuenow={progress}
                   aria-valuemin={0}
                   aria-valuemax={100}
-                  aria-label="Export progress"
-                  className="h-full rounded-full bg-film-600 transition-all duration-300"
+                  aria-label={isLoading? "Engine download progress": "Export progress"}
+                  className="h-full bg-film-600 rounded-full transition-all duration-300"
                   style={{ width: `${progress}%` }}
                 />
               </div>
-
-              <p className="font-heading text-xs font-semibold text-[var(--muted)]">
+              <p className="text-xs font-heading font-semibold text-[var(--muted)]">
                 {progress}%
               </p>
-
-              {onCancel && (
-                <div className="mt-4 flex flex-col items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={onCancel}
-                    className="inline-flex items-center justify-center rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm font-semibold text-red-600 transition-colors hover:bg-red-100 active:scale-[0.98]"
-                  >
-                    Cancel Export
-                  </button>
-
-                  <p className="text-xs text-gray-500">Press Escape to cancel</p>
-                </div>
+              {!isLoading && (
+              <div className="flex flex-col items-center gap-3 mt-4">
+                <button
+                  type="button"
+                  onClick={() => onCancel?.()}
+                  className="inline-flex items-center justify-center rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm font-semibold text-red-600 transition-colors hover:bg-red-100 active:scale-[0.98]"
+                >
+                  Cancel Export
+                </button>
+                <p className="text-gray-500 text-xs">
+                  Press Escape to cancel
+                </p>
+              </div>
               )}
             </div>
-          )}
         </div>
       </div>
     </FocusTrap>
